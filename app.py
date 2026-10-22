@@ -361,13 +361,16 @@ def inject_css() -> None:
             color: {k['white']}; padding: 1.1rem 1.4rem; border-radius: 6px;
             margin-bottom: 1.2rem;
         }}
-        .kellogg-band h1 {{ color: {k['white']}; margin: 0; font-size: 1.9rem; }}
-        .kellogg-band p {{ color: {k['purple_10']}; margin: .25rem 0 0 0; }}
+        .kellogg-title {{
+            color: {k['white']}; margin: 0; font-size: 2rem; font-weight: 700;
+            line-height: 1.2;
+        }}
+        .kellogg-sub {{ color: {k['purple_10']}; margin: .3rem 0 0 0; font-size: 1.05rem; }}
         [data-testid="stMetric"] {{
             background-color: {k['purple_10']}; border-left: 4px solid {k['purple']};
             padding: .6rem .8rem; border-radius: 4px;
         }}
-        [data-testid="stMetricValue"] {{ color: {k['purple']}; }}
+        [data-testid="stMetricValue"] {{ color: {k['purple']}; font-size: 1.7rem; }}
         .stButton > button, .stDownloadButton > button {{
             background-color: {k['purple']}; color: {k['white']};
             border: 1px solid {k['purple']}; border-radius: 4px;
@@ -409,7 +412,7 @@ def make_chart(win: pd.DataFrame, mode: str, c1: str, c2: str,
         fig.update_yaxes(title_text="Real Index (RER* = 100)", secondary_y=False,
                          title_font=dict(color=k["purple"]), tickfont=dict(color=k["purple"]))
         fig.update_yaxes(title_text=nominal_title, secondary_y=True, showgrid=False,
-                         type="log" if log_nominal else "linear",
+                         type="log" if log_nominal else "linear", exponentformat="power",
                          title_font=dict(color=k["black_50"]), tickfont=dict(color=k["black_50"]))
         fig.add_hline(y=100, line=dict(color=k["purple_30"], dash="dash", width=1))
     elif mode == "Real":
@@ -418,7 +421,8 @@ def make_chart(win: pd.DataFrame, mode: str, c1: str, c2: str,
         fig.add_hline(y=100, line=dict(color=k["purple_30"], dash="dash", width=1))
     else:
         fig = go.Figure(nominal_trace)
-        fig.update_yaxes(title_text=nominal_title, type="log" if log_nominal else "linear")
+        fig.update_yaxes(title_text=nominal_title, type="log" if log_nominal else "linear",
+                         exponentformat="power")
 
     fig.update_layout(
         title=dict(text=f"{name1} vs {name2}", font=dict(color=k["purple"], size=18)),
@@ -457,8 +461,8 @@ def main() -> None:
     st.markdown(
         """
         <div class="kellogg-band">
-          <h1>Real Exchange Rate Explorer</h1>
-          <p>Bilateral real exchange rates from IMF monthly CPI and exchange-rate data</p>
+          <div class="kellogg-title">Real Exchange Rate Explorer</div>
+          <div class="kellogg-sub">Bilateral real exchange rates from IMF monthly CPI and exchange-rate data</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -509,12 +513,21 @@ def main() -> None:
         format_func=lambda p: p.strftime("%b %Y"),
     )
 
+    win, rer_star = compute_window(panel, start, end)
+
+    # Nominal range: if S(t) spans more than two orders of magnitude (hyperinflation
+    # or currency redenominations), default the nominal axis to log scale.
+    s_pos = win["S"].dropna()
+    s_pos = s_pos[s_pos > 0]
+    s_span = float(s_pos.max() / s_pos.min()) if not s_pos.empty else 1.0
+    wide_nominal = s_span > 100
+
     st.sidebar.header("Chart")
     mode = st.sidebar.radio("Show", ["Real", "Nominal", "Both"], index=2, horizontal=True)
-    log_nominal = st.sidebar.checkbox("Log scale for nominal S(t)", value=False,
-                                      disabled=(mode == "Real"))
-
-    win, rer_star = compute_window(panel, start, end)
+    log_nominal = st.sidebar.checkbox(
+        "Log scale for nominal S(t)", value=wide_nominal,
+        key=f"log_{c1}_{c2}_{start}_{end}", disabled=(mode == "Real"),
+    )
     n_valid = int(win["valid"].sum())
     n_dropped = int((~win["valid"]).sum())
 
@@ -525,11 +538,23 @@ def main() -> None:
     first_valid = win.index[win["valid"]].min()
     last_valid = win.index[win["valid"]].max()
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("RER*", f"{rer_star:,.6g}")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("RER*", f"{rer_star:,.6g}",
+              help="Level depends on CPI base years, so only the index is comparable over time.")
     m2.metric("Valid months", f"{n_valid:,}")
-    m3.metric("Coverage", f"{first_valid.strftime('%b %Y')} to {last_valid.strftime('%b %Y')}")
-    m4.metric("Months dropped (gaps)", f"{n_dropped:,}")
+    m3.metric("First valid month", first_valid.strftime("%b %Y"))
+    m4.metric("Last valid month", last_valid.strftime("%b %Y"))
+    m5.metric("Months dropped (gaps)", f"{n_dropped:,}")
+
+    if s_span > 1_000:
+        st.info(
+            f"Nominal S(t) moves by a factor of about {s_span:,.3g} over this window. "
+            "The IMF expresses old exchange rates in today's currency units, so for "
+            "countries that redenominated (for example Brazil, which cut zeros from its "
+            "currency several times before the real in 1994) early values look extreme. "
+            "That is consistent with the data, and the Real Index is unaffected because "
+            "the CPI is chained the same way. The log scale makes the nominal path readable."
+        )
 
     st.plotly_chart(make_chart(win, mode, c1, c2, name1, name2, log_nominal),
                     width="stretch")
